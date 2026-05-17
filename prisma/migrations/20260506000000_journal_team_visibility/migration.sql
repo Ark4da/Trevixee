@@ -1,0 +1,1 @@
+ALTER TABLE "JournalEntry" ADD COLUMN "sharedWithTeam" BOOLEAN NOT NULL DEFAULT true;

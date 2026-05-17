@@ -1,0 +1,101 @@
+name: Production Health
+
+on:
+  schedule:
+    - cron: "2,7,12,17,22,27,32,37,42,47,52,57 * * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: production-health
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  healthcheck:
+    name: Check trevixe.com
+    runs-on: ubuntu-latest
+    env:
+      HEALTH_URL: https://trevixe.com/api/health
+      ISSUE_TITLE: "[prod] trevixe healthcheck failing"
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Check production health endpoint
+        id: health
+        shell: bash
+        run: |
+          set +e
+          tmp="$(mktemp)"
+          http_code="$(curl --silent --show-error --location --max-time 20 --retry 2 --retry-delay 5 --output "$tmp" --write-out "%{http_code}" "$HEALTH_URL")"
+          curl_exit=$?
+          body="$(head -c 1200 "$tmp" | tr '\n' ' ')"
+          rm -f "$tmp"
+
+          echo "http_code=$http_code" >> "$GITHUB_OUTPUT"
+          echo "curl_exit=$curl_exit" >> "$GITHUB_OUTPUT"
+          {
+            echo "body<<EOF"
+            echo "$body"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+          if [ "$curl_exit" -ne 0 ] || [ "$http_code" -lt 200 ] || [ "$http_code" -ge 400 ]; then
+            exit 1
+          fi
+
+      - name: Open or update production incident issue
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HTTP_CODE: ${{ steps.health.outputs.http_code }}
+          CURL_EXIT: ${{ steps.health.outputs.curl_exit }}
+          RESPONSE_BODY: ${{ steps.health.outputs.body }}
+        shell: bash
+        run: |
+          gh label create "production" --color "B60205" --description "Production runtime or deployment issue" 2>/dev/null || true
+          gh label create "healthcheck" --color "D93F0B" --description "Healthcheck monitor signal" 2>/dev/null || true
+          gh label create "agent-fix-needed" --color "5319E7" --description "Needs agent analysis or fix proposal" 2>/dev/null || true
+
+          existing="$(gh issue list --state open --search "$ISSUE_TITLE in:title" --json number --jq '.[0].number // empty')"
+          body="## Fixer Task
+
+          - Title: Restore production health endpoint
+          - Source: GitHub Actions Production Health
+          - Severity: P0 if the site is unavailable to users, otherwise P1
+          - Objective: Find why the production health endpoint is failing and prepare the smallest safe fix.
+          - Evidence: URL $HEALTH_URL returned HTTP $HTTP_CODE with curl exit $CURL_EXIT. Response preview: $RESPONSE_BODY
+          - Suspected area: Railway deployment/runtime logs, /api/health route, database connectivity, env/config expectations, recent commits.
+          - Reproduction/check: curl --location --max-time 20 $HEALTH_URL
+          - Constraints: Do not redeploy/restart Railway, change env vars, mutate the database, touch secrets, or push to main without explicit approval.
+          - Approval needed: yes for Railway actions, env/config changes, database changes, or broad production-impacting fixes; no for small verified code fixes in a PR/branch.
+          - Verification: health endpoint returns 2xx/3xx, Railway service is RUNNING, and relevant build/lint/smoke checks pass.
+
+          ## Monitor Context
+
+          URL: $HEALTH_URL
+          HTTP code: $HTTP_CODE
+          curl exit: $CURL_EXIT
+          Response preview: $RESPONSE_BODY
+          Workflow: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID
+
+          Safe next step: inspect Railway deployment status and runtime logs before making changes."
+
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body "$body"
+          else
+            gh issue create --title "$ISSUE_TITLE" --label "production,healthcheck,agent-fix-needed" --body "$body"
+          fi
+
+      - name: Close recovered production incident issue
+        if: success()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          existing="$(gh issue list --state open --search "$ISSUE_TITLE in:title" --json number --jq '.[0].number // empty')"
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body "Production healthcheck recovered at $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID."
+            gh issue close "$existing" --reason completed
+          fi

@@ -1,0 +1,106 @@
+name: Project Health
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  schedule:
+    - cron: "37 6 * * 1-5"
+  workflow_dispatch:
+
+concurrency:
+  group: project-health-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  checks:
+    name: Lint, build, and smoke
+    runs-on: ubuntu-latest
+    env:
+      CI: true
+      NEXT_TELEMETRY_DISABLED: 1
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/trevixe?schema=public
+      NEXTAUTH_URL: http://localhost:3000
+      NEXTAUTH_SECRET: ci-nextauth-secret
+      ISSUE_TITLE: "[ci] trevixe project health failing"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Build
+        run: npm run build
+
+      - name: Smoke
+        run: npm run test:smoke
+
+      - name: Open or update project health issue
+        if: failure() && github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          gh label create "ci" --color "1D76DB" --description "Continuous integration signal" 2>/dev/null || true
+          gh label create "agent-fix-needed" --color "5319E7" --description "Needs agent analysis or fix proposal" 2>/dev/null || true
+
+          existing="$(gh issue list --state open --search "$ISSUE_TITLE in:title" --json number --jq '.[0].number // empty')"
+          body="## Fixer Task
+
+          - Title: Restore scheduled project health checks
+          - Source: GitHub Actions Project Health
+          - Severity: P1 if main cannot build, P2 for lint/smoke-only regressions
+          - Objective: Reproduce the failing CI command and make the smallest safe fix.
+          - Evidence: Scheduled project health workflow failed.
+          - Suspected area: files changed since the last passing run, package scripts, TypeScript/ESLint output, Next.js build output, smoke assertions.
+          - Reproduction/check: inspect this workflow run first, then run the exact failing command locally.
+          - Constraints: Do not change dependencies, lockfiles, schema/data, auth, billing, Railway config, secrets, or broad architecture without approval.
+          - Approval needed: yes if the fix needs dependencies, migrations, env/config changes, auth/billing/data behavior, or broad refactors; no for small verified TypeScript/lint/build/smoke fixes.
+          - Verification: the originally failing command passes, then npm run lint, npm run build, and npm run test:smoke pass when practical.
+
+          ## Monitor Context
+
+          Scheduled project health check failed.
+
+          Checked commands:
+          - npm ci
+          - npm run lint
+          - npm run build
+          - npm run test:smoke
+
+          Workflow: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID
+
+          Safe next step: inspect the failed job logs, reproduce the failing command, classify risk, and only apply low-risk fixes autonomously."
+
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body "$body"
+          else
+            gh issue create --title "$ISSUE_TITLE" --label "ci,agent-fix-needed" --body "$body"
+          fi
+
+      - name: Close recovered project health issue
+        if: success() && github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          existing="$(gh issue list --state open --search "$ISSUE_TITLE in:title" --json number --jq '.[0].number // empty')"
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body "Scheduled project health check recovered at $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID."
+            gh issue close "$existing" --reason completed
+          fi

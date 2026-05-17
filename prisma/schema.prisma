@@ -1,0 +1,334 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+}
+
+model User {
+  id              String         @id @default(cuid())
+  email           String         @unique
+  name            String?
+  password        String?
+  provider        String?
+  plan            String         @default("free")
+  emailVerifiedAt DateTime?
+  createdAt       DateTime       @default(now())
+  trades          Trade[]
+  journalEntries  JournalEntry[]
+  notes           Note[]
+  playbooks       Playbook[]
+  goals           Goal[]
+  settings        UserSettings?
+  billing         BillingCustomer?
+  verificationTokens EmailVerificationToken[]
+  passwordResetTokens PasswordResetToken[]
+}
+
+model Trade {
+  id             String   @id @default(cuid())
+  userId         String
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  symbol         String
+  side           String   // long | short
+  entryPrice     Float
+  exitPrice      Float?
+  quantity       Float
+  entryDate      DateTime
+  exitDate       DateTime?
+  pnl            Float    @default(0)
+  fees           Float    @default(0)
+  netPnl         Float    @default(0)
+  rMultiple      Float    @default(0)
+  stopLoss       Float?
+  takeProfit     Float?
+  setup          String?
+  strategy       String?
+  market         String   @default("futures")
+  timeframe      String?
+  notes          String?
+  tags           String?  // comma-separated
+  rating         Int?     // 1-5
+  emotionalState String?
+  mistakes       String?  // comma-separated
+  brokerTicket   String?  // ticket/order number from broker (FTMO, MT5, etc.)
+  accountId      String?  // multi-account (nullable for migration)
+  playbookId     String?  // linked playbook (nullable for migration)
+  status         String   @default("closed")
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([accountId])
+}
+
+model JournalEntry {
+  id              String   @id @default(cuid())
+  userId          String
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  date            DateTime
+  preMarketNotes  String?
+  postMarketNotes String?
+  marketCondition String?
+  emotionalState  String?
+  rulesFollowed   Boolean  @default(true)
+  lessonsLearned  String?
+  dailyGoal       String?
+  goalMet         Boolean  @default(false)
+  rating          Int?     // 1-5
+  notes           String?
+  sharedWithTeam  Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@unique([userId, date])
+}
+
+model Note {
+  id        String         @id @default(cuid())
+  userId    String
+  user      User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title     String
+  content   String
+  category  String         @default("general") // mistake | lesson | idea | rule | general
+  tags      String?        // comma-separated
+  isPinned  Boolean        @default(false)
+  createdAt DateTime       @default(now())
+  updatedAt DateTime       @updatedAt
+  links     NotebookLink[]
+}
+
+model NotebookLink {
+  id        String   @id @default(cuid())
+  userId    String
+  noteId    String
+  tradeId   String?
+  journalId String?
+  createdAt DateTime @default(now())
+
+  note      Note         @relation(fields: [noteId], references: [id], onDelete: Cascade)
+
+  @@index([tradeId])
+  @@index([noteId])
+  @@index([userId])
+}
+
+model Playbook {
+  id               String         @id @default(cuid())
+  userId           String
+  user             User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name             String
+  description      String?
+  market           String         @default("futures")
+  timeframe        String?
+  tags             String?        // comma-separated
+  isActive         Boolean        @default(true)
+  isReadOnly       Boolean        @default(false)
+  sourcePlaybookId String?
+  pushedByUserId   String?
+  pushedAt         DateTime?
+  rules            PlaybookRule[]
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+}
+
+model PlaybookRule {
+  id         String   @id @default(cuid())
+  type       String   // entry | exit | risk | general
+  text       String
+  playbookId String
+  playbook   Playbook @relation(fields: [playbookId], references: [id], onDelete: Cascade)
+  sortOrder  Int      @default(0)
+}
+
+model Goal {
+  id        String    @id @default(cuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title     String
+  type      String    // winRate | pnl | trades | rulesFollowed | streak
+  target    Float
+  period    String    @default("weekly") // weekly | monthly
+  startDate DateTime
+  endDate   DateTime
+  isActive  Boolean   @default(true)
+  createdAt DateTime  @default(now())
+}
+
+model UserSettings {
+  id                 String  @id @default(cuid())
+  userId             String  @unique
+  user               User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userName           String  @default("Trader")
+  defaultMarket      String  @default("futures")
+  defaultCurrency    String  @default("USD")
+  riskPerTrade       Float   @default(1.0)
+  accountBalance     Float   @default(0)
+  maxDailyLoss       Float   @default(0)
+  maxDailyTrades     Int     @default(0)
+  timezone           String  @default("America/New_York")
+  hideAmountsInTeam  Boolean @default(false)
+  privacyPeriodDays  Int     @default(0)
+}
+
+model BillingCustomer {
+  id                    String   @id @default(cuid())
+  userId                String   @unique
+  user                  User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  // Provider-specific IDs. Both nullable to support multi-provider users.
+  stripeCustomerId      String?  @unique
+  nowpaymentsCustomerId String?  @unique
+  // Last provider used; informational only — entitlements don't depend on it.
+  provider              String   @default("stripe") // stripe | nowpayments
+  createdAt             DateTime @default(now())
+}
+
+model Subscription {
+  id                   String     @id @default(cuid())
+  userId               String?
+  workspaceId          String?
+  workspace            Workspace? @relation("WorkspaceSubscriptions", fields: [workspaceId], references: [id], onDelete: SetNull)
+  // Provider that owns this subscription record. Determines which webhook updates it.
+  provider             String     @default("stripe") // stripe | nowpayments
+  // Stripe-specific (nullable now, set only when provider="stripe").
+  stripeSubscriptionId String?    @unique
+  // Generic external id used by non-Stripe providers (e.g. NowPayments order_id).
+  externalId           String?    @unique
+  planCode             String
+  status               String
+  currentPeriodEnd     DateTime
+  cancelAtPeriodEnd    Boolean    @default(false)
+  seatCount            Int?
+  trialEndsAt          DateTime?
+  lastSyncAt           DateTime   @default(now())
+  createdAt            DateTime   @default(now())
+  updatedAt            DateTime   @updatedAt
+}
+
+model ProcessedStripeEvent {
+  eventId     String   @id
+  type        String
+  processedAt DateTime @default(now())
+}
+
+// Idempotency for NowPayments IPN callbacks. NowPayments retries failed IPNs,
+// so we record the payment_id once it's processed and reject duplicates.
+model ProcessedNowPaymentsEvent {
+  paymentId   String   @id    // NowPayments payment_id (string)
+  status      String           // last status seen (waiting/finished/failed/...)
+  processedAt DateTime @default(now())
+}
+
+model EmailVerificationToken {
+  id        String    @id @default(cuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  token     String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+}
+
+model PasswordResetToken {
+  id        String    @id @default(cuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  token     String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId])
+}
+
+model Workspace {
+  id          String             @id @default(cuid())
+  name        String
+  slug        String             @unique
+  ownerUserId String
+  createdAt   DateTime           @default(now())
+  members     WorkspaceMember[]
+  invites     WorkspaceInvite[]
+  subscription Subscription[]   @relation("WorkspaceSubscriptions")
+}
+
+model WorkspaceMember {
+  id                  String    @id @default(cuid())
+  workspaceId         String
+  workspace           Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  userId              String
+  role                String    // owner | mentor | member
+  joinedAt            DateTime  @default(now())
+  privacyPeriodUntil  DateTime?
+
+  @@unique([workspaceId, userId])
+}
+
+model WorkspaceInvite {
+  id                String    @id @default(cuid())
+  workspaceId       String
+  workspace         Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  email             String
+  role              String
+  token             String    @unique
+  expiresAt         DateTime
+  acceptedAt        DateTime?
+  acceptedByUserId  String?
+  revokedAt         DateTime?
+  createdAt         DateTime  @default(now())
+}
+
+model TradeComment {
+  id            String   @id @default(cuid())
+  tradeId       String
+  workspaceId   String
+  authorUserId  String
+  body          String
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}
+
+model PinnedTeamContent {
+  id              String   @id @default(cuid())
+  workspaceId     String
+  kind            String   // note | playbook | trade | article
+  refId           String
+  pinnedByUserId  String
+  pinnedAt        DateTime @default(now())
+}
+
+model TradeMaeMfe {
+  tradeId     String   @id
+  mae         Float
+  mfe         Float
+  computedAt  DateTime @default(now())
+}
+
+model RuleViolation {
+  id          String   @id @default(cuid())
+  userId      String
+  tradeId     String
+  playbookId  String
+  ruleId      String   // PlaybookRule.id
+  note        String?
+  detectedAt  DateTime @default(now())
+
+  @@index([userId])
+  @@index([tradeId])
+}
+
+model Account {
+  id        String   @id @default(cuid())
+  userId    String
+  name      String
+  kind      String   @default("live") // demo | live | prop
+  broker    String?
+  currency  String   @default("USD")
+  balance   Float    @default(0)
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+}
